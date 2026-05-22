@@ -1,0 +1,23 @@
+변수명 GRIB 변수 변호 설명 단위
+tmpr 0 Temperature K
+rhwt 1001 Relative Humidity %
+ugrd 2002 U-Component of Wind(10 m above ground) m/s
+vgrd 2003 V-Component of Wind(10 m above ground) m/s
+tmps 17 Skin Temperature K
+tmpw 1003000 Water Temperature K
+prem 3000 Pressure(mean sea level) Pa
+pres 3000 Pressure(surface) Pa
+hpbl 3018 Planetary Boundary Layer Height m
+apcp 1008 Total Precipitation kg/m2
+ncpc 1009 Large-Scale Precipitation(non-convective) kg/m2
+acpc 1010 Convective Precipitation kg/m2
+snol 1015 Large-ScaleSnow kg/m2
+tcog 1074 Total Column Integrate Graupel kg/m2
+tcoh 1072 Total Column Integrate Hail kg/m2
+cape 7006 Convective Available Potential Energy J/kg
+cinn 7007 Convective Inhibition J/kg
+nlwr 5001 Net Long-Wave Radiation Flux(Topof Atmosphere) -
+visi 19000 Visibility m
+gust 2022 WindSpeed(Gust) m/s
+80mu 2002 U-Component of Wind m/s
+80mv 2003 V-Component of Wind m/s

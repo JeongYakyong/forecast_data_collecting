@@ -1,0 +1,19 @@
+□ 등압면(pres)
+ * 1000, 975, 950, 925, 900, 875, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150, 100, 70, 50 hPa
+
+변수명 GRIB 변수 변호 설명 단위
+tmpr 0 Temperature K
+rhwt 1001 Relative Humidity %
+ugrd 2002 U-Component of Wind m/s
+vgrd 2003 V-Component of Wind m/s
+dzdt 2009 Vertical Velocity(Geometric) m/s
+ghgt 3005 Geopotential Height gpm
+frcc 6032 Fraction of Cloud Cover -
+spfh 1000 Specific Humidity kg/kg
+clmr 1022 Cloud Mixing Ratio kg/kg
+rwmr 1024 Rain Mixing Ratio kg/kg
+icmr 1023 Ice Water Mixing Ratio kg/kg
+snmr 1025 Snow Mixing Ratio kg/kg
+grle 1032 Graupel kg/kg
+nccd 6028 Number Concentration of Cloud Droplets Validation kg-1
+sncr 1100 Specific Number Concentration of Rain kg-1
