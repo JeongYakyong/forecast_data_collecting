@@ -4,7 +4,8 @@
       "PowerShell($url = \"https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtFcst?pageNo=1&numOfRows=1000&dataType=JSON&base_date=20260522&base_time=2330&nx=46&ny=35&authKey=ngO4lNeuTxeDuJTXrl8XFw\"; $r = Invoke-WebRequest -Uri $url -UseBasicParsing; $r.Content)",
       "PowerShell(python -c \"import requests, dotenv; print\\('ok'\\)\")",
       "PowerShell(python collect_vsrt.py --base 20260522 2330)",
-      "PowerShell(python _inspect_vsrt.py)"
+      "PowerShell(python _inspect_vsrt.py)",
+      "Bash(python *)"
     ]
   }
 }

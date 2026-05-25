@@ -10,17 +10,20 @@ Collect KMA (Korean Meteorological Administration) forecast data on a recurring 
 
 - `collect_vilage.py` — **production collector #1 (Village Forecast, 단기예보).** Fetches one KMA Village Forecast issue (both Jeju points) and inserts every returned row into SQLite. Idempotent, dynamic `base_date`/`base_time`, supports `--base YYYYMMDD HHMM` for backfill. Runs from cron 4×/day. 3-day horizon, hourly.
 - `collect_vsrt.py` — **production collector #2 (Ultra-Short-Range Forecast, 초단기예보).** Same shape as the Village collector but: single point (Gosan only), endpoint `getUltraSrtFcst`, base time is every hour at HH:30, 6-hour forecast horizon, no windowing. Writes to a **separate DB** at `data/vsrt.db` (table `ultra_srt_forecast`). Runs from cron hourly, 24×/day.
-- `probe_vilage_wind.py` — original interactive probe. Kept as a reference for inspecting raw API payloads; not used in production.
-- `변수명 GRIB 변수 변호 설명 단위.txt` — reference table of single-level GRIB variable codes for a **planned** third collector (KMA NWP/GRIB endpoint, not yet written). Neither Village nor VSRT exposes 80m hub-height wind, pressure, PBL height, or gust — those are the motivating variables for the GRIB follow-up.
-- `등압면(pres).txt` — reference table of pressure-level (1000~50 hPa) GRIB variables. The user's primary target from this set is **`frcc` (Fraction of Cloud Cover)** at all 24 pressure levels — to be added as a fourth collector covering vertical cloud structure (complements Village/VSRT's surface-only SKY).
+- `collect_kim.py` — **production collector #3 (KIM Regional, single-level / data=U).** Pulls 10 categories (80m & 10m wind U/V, GUST, CAPE, CIN, HPBL, TCOG, TCOH) for both Jeju points from the KMA apihub `kim_grib_pt_tmfc.php` endpoint. 4 publishes/day at UTC 00/06/12/18 (= KST 09/15/21/03). Writes to `data/kim.db` (table `kim_forecast`). Supports `--backfill N_DAYS` for one-shot history pulls — KIM's retention is ~180 days vs Village's ~1 day, which makes this collector tolerant of long cron outages.
+- `probe_vilage_wind.py` — original interactive probe for Village. Kept as a reference for inspecting raw API payloads; not used in production.
+- `probe_kim.py` / `probe_kim_history.py` / `probe_kim_80m.py` — one-off probes used while designing `collect_kim.py`. Document the KIM response format, multi-varn behavior, retention floor (~180 d), and the 80m spin-up artifact at t=0. Keep for reference; safe to delete if the repo gets crowded.
+- `변수명 GRIB 변수 변호 설명 단위.txt` — reference table of single-level GRIB variable codes; the source of truth for `CATEGORY_MAP` in `collect_kim.py`.
+- `등압면(pres).txt` — reference table of pressure-level (1000~50 hPa) GRIB variables. The user's primary target from this set is **`frcc` (Fraction of Cloud Cover)** at all 24 pressure levels — to be added as a **planned fourth collector** covering vertical cloud structure (complements Village/VSRT's surface-only SKY).
 - `requirements.txt` — `requests`, `python-dotenv`. Everything else is stdlib (Python 3.9+ for `zoneinfo`).
-- `.env.example` — template for the required `KMA_API_KEY` (shared by both collectors).
+- `.env.example` — template for the required `KMA_API_KEY` (shared by all three collectors).
 - `data/forecast.db` — Village Forecast SQLite output.
 - `data/vsrt.db` — Ultra-Short-Range Forecast SQLite output (separate file by design — different temporal cadence, different table shape would mix poorly).
+- `data/kim.db` — KIM Regional single-level SQLite output (separate file: different grid coords X/Y vs nx/ny, different publish cadence, different category vocabulary).
 
 ## Storage model
 
-**Two SQLite files, one per collector.**
+**Three SQLite files, one per collector.**
 
 `data/forecast.db` — Village Forecast (schema in `collect_vilage.py::SCHEMA`):
 
@@ -38,7 +41,15 @@ ultra_srt_forecast(base_datetime, fcst_datetime, point_name, nx, ny,
 PRIMARY KEY (base_datetime, fcst_datetime, point_name, category)
 ```
 
-Both share the same column shape and PK design — only the table name and DB file differ. Kept separate because the cadences differ ~24× (VSRT is hourly, Village is 4×/day) and the per-row meaning differs (VSRT is nowcast/0~6h, Village is short-range/3-day).
+`data/kim.db` — KIM Regional single-level (schema in `collect_kim.py::SCHEMA`):
+
+```
+kim_forecast(base_datetime, fcst_datetime, point_name, x, y,
+             category, fcst_value, collected_at)
+PRIMARY KEY (base_datetime, fcst_datetime, point_name, category)
+```
+
+All three share the same column shape (KIM uses `x`/`y` instead of `nx`/`ny` because the grid is the KIM regional model grid, not KMA's service grid). Kept in separate files because the cadences and per-row meanings differ enough that joining would be confusing; downstream EDA joins on `(point_name, fcst_datetime)` as needed.
 
 Design rules:
 - **Every issue is kept**, not overwritten. The 05H, 14H, 20H, 23H forecasts targeting the same `fcst_datetime` all coexist as separate rows distinguished by `base_datetime`. This is for lead-time / skill-score EDA — do not change this without asking.
@@ -58,7 +69,7 @@ Design rules:
 
 ## KMA API specifics
 
-Both collectors share `KMA_API_KEY` and the same `apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/` base. Only the endpoint name and timing differ.
+All three collectors share `KMA_API_KEY`. Village and VSRT use `apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/`; KIM uses a different hub path (`typ06/url/kim_grib_pt_tmfc.php`). All use the `authKey=` query param.
 
 ### Village Forecast (`getVilageFcst`, 단기예보)
 - KMA publishes 8 issue slots (KST): 02, 05, 08, 11, 14, 17, 20, 23. **This project only collects 4 of them: 05, 14, 20, 23** (see `ISSUE_HOURS` in `collect_vilage.py`). The other 4 are intentionally skipped — irregular but acceptable spacing for EDA purposes.
@@ -76,6 +87,19 @@ Both collectors share `KMA_API_KEY` and the same `apihub.kma.go.kr/api/typ02/ope
 - Per-issue row count: 60 rows (10 categories × 6 valid times × 1 point). Daily: ~1,440 rows. Annual: ~525k rows — still tiny for SQLite.
 - Retention assumed similar to Village (~1 day); not yet stress-tested. Treat backfill window as "today and yesterday only."
 
+### KIM Regional Single-Level (`kim_grib_pt_tmfc.php`, data=U)
+- Endpoint: `https://apihub.kma.go.kr/api/typ06/url/kim_grib_pt_tmfc.php` (different hub path: `typ06`, not `typ02`).
+- Required params: `group=KIMR`, `nwp=r030`, `data=U`, `varn=...`, `tmfc=YYYYMMDDHH (UTC)`, `ef=start,end,step (hours)`, `X=...`, `Y=...`, `authKey=$KMA_API_KEY`.
+- **Grid coords**: this API uses the KIM regional model's native grid (X=column, Y=row), NOT the KMA service grid `nx/ny` used by Village/VSRT. The two Jeju points are `West(Gosan) X=529 Y=253` and `East(Seongsan) X=548 Y=259` (derived from target lat/lon → nearest KIM grid point, ~1 km offset).
+- 4 issues/day at **UTC 00, 06, 12, 18** (= KST 09, 15, 21, 03 next day). **Publish delay ≈ 10–15 min**; the collector uses a 3h safety margin and the default action re-fetches the previous publish too, so a missed cron run self-heals within 6h.
+- **Response is plaintext, not JSON.** EUC-KR header lines beginning with `#` (Korean comments) wrapped by `#START7777` / `#7777END`; data lines are pure ASCII with 5 whitespace-separated columns: `TMFC TMEF VARN LEVEL VALUE`. Parser: skip `#` lines, split on whitespace. The Korean header mojibake under cp1252 is harmless because we never read it.
+- **Multi-varn in one call works only with comma separator** (`varn=2002,2003,2022,...`). `+` and space separators silently return an empty body. Omitting `varn` also returns empty (cannot fetch "all variables"). The collector packs all 8 GRIB codes into one comma-separated `varn` to keep API call count to **1 per (publish, point) = 2 per cron run** (plus 2 more for the safety re-fetch).
+- **`varn=2002`/`2003` return TWO rows per timestep** (LEVEL=10 / LEVEL=80), giving us 10m and 80m wind from a single varn. The rest of the variables return LEVEL=0 only. `CATEGORY_MAP` keys on `(varn, level)` to encode height into the category name (`WIND_U_10M`, `WIND_U_80M`, etc.).
+- **80m wind has a model spin-up artifact**: at `TMEF=TMFC` (t=0) the 80m fields are always exactly 0.0 (KIM's analysis only carries surface wind; 80m only populates after the first model timestep). The day-aligned KST window always starts at ≥ +3h from base, so the spin-up rows are naturally filtered out — no special handling needed. Confirmed empirically across 24 cases (3 days × 4 publishes × 2 points). 10m wind is unaffected.
+- **Day-aligned window** `[D+1 00 KST, D+3 00 KST)` (same convention as Village's 05/14/20 publishes) = 48 hourly steps × 10 categories = **480 rows per publish per point**. × 2 points × 4 publishes = **3,840 rows/day**.
+- **Retention ≈ 180 days** (empirically: -180d returns data, -200d empty). Verified by `probe_kim_history.py`. Hugely better than Village's ~1 day, which is why `collect_kim.py` ships with `--backfill N_DAYS` (initial seeding done with `--backfill 150` → ~576k rows).
+- **API quota** (per KMA apihub user dashboard): 20,000 calls/day, 5 GB/day. Ongoing cron uses ~16 calls/day (4 publishes × safety re-fetch × 2 points), well under 0.1% of quota. The 150-day backfill used 1,200 calls (~6%).
+
 ## Common commands
 
 ```powershell
@@ -86,6 +110,11 @@ python collect_vilage.py --base 20260522 0500   # backfill / test
 # Ultra-Short-Range Forecast — latest issue → data/vsrt.db
 python collect_vsrt.py
 python collect_vsrt.py --base 20260522 2330     # backfill / test (HHMM must end with 30)
+
+# KIM Regional single-level — latest 2 publishes (safety re-fetch) → data/kim.db
+python collect_kim.py
+python collect_kim.py --base 20260523 12        # specific UTC publish (HH in 00/06/12/18)
+python collect_kim.py --backfill 150            # one-shot history pull, ~40 min @ 2 sec/call
 
 # inspect raw API payload for one Village issue (no DB write)
 python probe_vilage_wind.py
@@ -102,11 +131,21 @@ pip install -r requirements.txt
 
 **Status: live since 2026-05-22.** Running on user's Linux Mint host (KST system timezone), reachable via Tailscale. Repo lives at `github.com/JeongYakyong/forecast_data_collecting`; the server keeps a clone at `~/forecast_data_collecting` with a venv at `~/forecast_data_collecting/.venv`.
 
-Active crontab entries (one line per collector — both append to the same `cron.log`):
+Active crontab entries (one line per collector — all three append to the same `cron.log`):
 ```
 30 5,14,20,23 * * * cd /home/kimjourvanne/forecast_data_collecting && /home/kimjourvanne/forecast_data_collecting/.venv/bin/python collect_vilage.py >> /home/kimjourvanne/forecast_data_collecting/data/cron.log 2>&1
 45 * * * *          cd /home/kimjourvanne/forecast_data_collecting && /home/kimjourvanne/forecast_data_collecting/.venv/bin/python collect_vsrt.py   >> /home/kimjourvanne/forecast_data_collecting/data/cron.log 2>&1
+0  0,6,12,18 * * *  cd /home/kimjourvanne/forecast_data_collecting && /home/kimjourvanne/forecast_data_collecting/.venv/bin/python collect_kim.py    >> /home/kimjourvanne/forecast_data_collecting/data/cron.log 2>&1
 ```
+
+The KIM line fires at KST 00/06/12/18 — each cron run is +3h past a UTC publish (UTC 12 → KST 00 cron, UTC 18 → KST 06 cron, UTC 00 → KST 12 cron, UTC 06 → KST 18 cron). `collect_kim.py` with no args fetches the latest publish **plus** the previous one (6h earlier) as a safety re-fetch, so a missed cron run self-heals on the next fire. Per-cron breakdown:
+
+| cron (KST) | latest publish (UTC) | safety re-fetch (UTC) |
+|---|---|---|
+| 00 | 12 (same day) | 06 (same day) |
+| 06 | 18 (same day) | 12 (same day) |
+| 12 | 00 (same day) | 18 (previous day) |
+| 18 | 06 (same day) | 00 (same day) |
 
 Operational notes:
 - Server timezone is already KST → no `TZ=` env var needed in crontab.
@@ -118,5 +157,5 @@ Operational notes:
 ## Conventions
 
 - **Language split**: Korean for source comments / docstrings (the user is Korean and reads code in Korean). **ASCII English only for**: (a) values written to the DB, (b) `print()` output that goes to cron logs. This split avoids Windows codepage / CP949 mojibake in stored data and in log files.
-- `POINTS` in `collect_vilage.py` is the single source of truth for collection locations. Don't duplicate this list in other modules — import it.
-- The probe script (`probe_vilage_wind.py`) is a reference only; do not delete it, but do not extend it for production — extend `collect_vilage.py` instead. Its internal Korean `POINTS` values are fine because the probe only prints to stdout, never writes to the DB.
+- **`POINTS` lists are per-collector** because the grid systems differ: Village/VSRT use KMA service grid `nx/ny` (Village: 46,35 / 59,38), KIM uses its own model grid `X/Y` (529,253 / 548,259). The `name` strings (`West(Gosan)` / `East(Seongsan)`) are the cross-collector join key. Lat/lon are the underlying source of truth — if a third coordinate system shows up later, derive new grid coords from those lat/lon, not from existing grid coords.
+- The probe scripts (`probe_vilage_wind.py`, `probe_kim*.py`) are references only; do not delete them, but do not extend them for production — extend the corresponding `collect_*.py` instead. Their internal Korean `POINTS` values are fine because probes only print to stdout, never write to the DB.
